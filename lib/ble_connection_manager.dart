@@ -1,71 +1,72 @@
-// src/ble_manager.dart
+// src/ble_connection_manager.dart
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 
-class BLEManager with ChangeNotifier {
+class BLEConnectionManager with ChangeNotifier {
   BluetoothDevice? _connectedDevice;
   BluetoothCharacteristic? _txCharacteristic;
   BluetoothCharacteristic? _rxCharacteristic;
+  bool _isConnected = false;
 
-  final Guid uartServiceUUID = Guid('B2D9943D-4D14-C967-F2BF-2F145CA909FD');
+  // サービスUUIDとキャラクタリスティックUUIDをデバイスに合わせて設定
+  final Guid uartServiceUUID =
+      Guid('6E400001-B5A3-F393-E0A9-E50E24DCCA9E'); // UARTサービスUUID
   final Guid txCharacteristicUUID =
-      Guid('B2D9943D-4D14-C967-F2BF-2F145CA909FD');
+      Guid('6E400003-B5A3-F393-E0A9-E50E24DCCA9E'); // TXキャラクタリスティックUUID
   final Guid rxCharacteristicUUID =
-      Guid('6E400002-B5A3-F393-E0A9-E50E24DCCA9E');
+      Guid('6E400002-B5A3-F393-E0A9-E50E24DCCA9E'); // RXキャラクタリスティックUUID
 
-  int previousImageId = -1;
-  int previousPacketIndex = -1;
-  List<int> constructingData = [];
-
-  Uint8List imageData = Uint8List(0);
-  bool isConnected = false;
-
-  List<DateTime> receivedTimestamps = [];
-
-  // ターゲットとなるBLE MACアドレス（大文字に統一）
+  // ターゲットMACアドレス
   final String targetMACAddress = '3A:32:37:3A:65:32';
-// 48:27:E2:E7:65:71
-  // スキャンの再試行に使用するタイマー
+
+  // 受信データ用のStreamController
+  final StreamController<List<int>> _dataController =
+      StreamController.broadcast();
+
+  Stream<List<int>> get dataStream => _dataController.stream;
+
+  // スキャン再試行用タイマー
   Timer? _scanRetryTimer;
 
-  // コンストラクタ
-  BLEManager() {
+  BLEConnectionManager() {
     FlutterBluePlus.adapterState.listen((state) {
       if (state == BluetoothAdapterState.off) {
-        isConnected = false;
+        _isConnected = false;
         notifyListeners();
         print('Bluetooth is not powered on.');
         _disconnectDevice();
       } else if (state == BluetoothAdapterState.on) {
-        // Bluetoothが有効になったら接続を開始
-        print("start connectToDevice");
+        print("Bluetooth powered on. Starting scan...");
         connectToDevice();
       }
     });
   }
 
+  bool get isConnected => _isConnected;
+
+  BluetoothDevice? get connectedDevice => _connectedDevice;
+
   void connectToDevice() {
-    // スキャンを開始
+    // スキャン開始
     FlutterBluePlus.startScan(timeout: const Duration(seconds: 5)).then((_) {
       print('Scan timeout reached.');
       _retryScan();
     });
 
-    // スキャン結果をリッスン
+    // スキャン結果のリッスン
     FlutterBluePlus.scanResults.listen((results) {
       for (ScanResult result in results) {
         final device = result.device;
         final advertisementData = result.advertisementData;
 
-        print('Discovered name：${device.name} Id：(${device.id.id})');
+        print('Discovered device: Name=${device.name}, ID=${device.id.id}');
 
         if (defaultTargetPlatform == TargetPlatform.android) {
-          // Androidの場合、MACアドレスでデバイスを特定
+          // Androidの場合、MACアドレスで特定
           if (device.id.id.toUpperCase() == targetMACAddress.toUpperCase()) {
+            print('Target Android device found: ${device.id.id.toUpperCase()}');
             FlutterBluePlus.stopScan();
             _connectToDevice(device);
             _cancelScanRetry();
@@ -73,15 +74,10 @@ class BLEManager with ChangeNotifier {
           }
         } else if (defaultTargetPlatform == TargetPlatform.iOS) {
           // iOSの場合、Manufacturer DataからMACアドレスを取得
-          // Manufacturer Dataが存在するか確認
           if (advertisementData.manufacturerData.isNotEmpty) {
-            // Manufacturer Dataの最初のエントリを取得（通常は1つ）
             final manufacturerData =
                 advertisementData.manufacturerData.values.first;
-
-            // MACアドレスが含まれていると仮定（6バイト）
             if (manufacturerData.length >= 6) {
-              // 最初の6バイトをMACアドレスとして取得
               final macBytes = manufacturerData.sublist(0, 6);
               final macAddress = _bytesToMacAddress(macBytes);
 
@@ -89,11 +85,14 @@ class BLEManager with ChangeNotifier {
                   'Extracted MAC Address from Manufacturer Data: $macAddress');
 
               if (macAddress == targetMACAddress.toUpperCase()) {
-                print("catch target device");
+                print("Target iOS device found");
                 FlutterBluePlus.stopScan();
                 _connectToDevice(device);
                 _cancelScanRetry();
                 break;
+              } else {
+                print(
+                    'Extracted MAC Address does not match target: $macAddress');
               }
             } else {
               print(
@@ -114,118 +113,106 @@ class BLEManager with ChangeNotifier {
         .toUpperCase();
   }
 
-  void _connectToDevice(BluetoothDevice device) async {
+  Future<void> _connectToDevice(BluetoothDevice device) async {
     _connectedDevice = device;
-
     try {
-      // 接続を開始
       await device.connect();
-      isConnected = true;
+      _isConnected = true;
       notifyListeners();
       print('Connected to ${device.name}');
 
-      // サービスを探索
+      // サービスの探索
       List<BluetoothService> services = await device.discoverServices();
+      bool uartServiceFound = false;
       for (BluetoothService service in services) {
-        if (service.uuid == uartServiceUUID) {
+        print('Service UUID: ${service.uuid}');
+        for (BluetoothCharacteristic characteristic
+            in service.characteristics) {
+          print('  Characteristic UUID: ${characteristic.uuid}');
+          print('    Properties: ${characteristic.properties}');
+        }
+        if (service.uuid.toString().toUpperCase() ==
+            uartServiceUUID.toString().toUpperCase()) {
+          uartServiceFound = true;
           for (BluetoothCharacteristic characteristic
               in service.characteristics) {
-            if (characteristic.uuid == txCharacteristicUUID) {
+            if (characteristic.uuid.toString().toUpperCase() ==
+                txCharacteristicUUID.toString().toUpperCase()) {
               _txCharacteristic = characteristic;
               await _setNotification(_txCharacteristic!);
-            } else if (characteristic.uuid == rxCharacteristicUUID) {
+            } else if (characteristic.uuid.toString().toUpperCase() ==
+                rxCharacteristicUUID.toString().toUpperCase()) {
               _rxCharacteristic = characteristic;
+              // RXキャラクタリスティックには通知を設定しない
+              // 必要に応じて、データ送信用の処理を追加
             }
           }
         }
       }
 
+      if (!uartServiceFound) {
+        print('UART Service not found on device');
+        // 必要に応じてエラーハンドリング
+      }
+
       // 接続状態の監視
       device.connectionState.listen((state) {
         if (state == BluetoothConnectionState.disconnected) {
-          isConnected = false;
-          notifyListeners();
-          print('Disconnected from device');
-          _disconnectDevice();
-          _retryScan();
+          if (_isConnected) {
+            _isConnected = false;
+            notifyListeners();
+            print('Disconnected from device');
+            _disconnectDevice();
+            _retryScan();
+          }
         }
       });
     } catch (e) {
       print('Error connecting to device: $e');
-      isConnected = false;
+      _isConnected = false;
       notifyListeners();
       _retryScan();
     }
   }
 
   Future<void> _setNotification(BluetoothCharacteristic characteristic) async {
-    await characteristic.setNotifyValue(true);
-    characteristic.value.listen((value) {
-      _onDataReceived(value);
-    });
-  }
+    try {
+      // プロパティの確認と通知設定
+      if (!characteristic.properties.notify) {
+        await characteristic.setNotifyValue(true);
+        print("Notification set on ${characteristic.uuid}");
 
-  void _onDataReceived(List<int> data) {
-    if (data.length < 3) return; // データ長の確認
+        // キャラクタリスティックのプロパティを再確認
+        print("=== After Setting Notification ===");
+        print("Properties: ${characteristic.properties}");
+        print("isNotifying: ${characteristic.isNotifying}");
+        print("===============================");
 
-    int imageId = data[0];
-    int packetIndex = data[1];
-    List<int> payload = data.sublist(2);
-
-    print(
-        'Image ID: $imageId, Packet Index: $packetIndex, Payload: ${payload.length} bytes');
-    print(
-        'Previous Image ID: $previousImageId, Previous Packet Index: $previousPacketIndex');
-    print('Data: ${data.length} bytes');
-    print('');
-
-    if (previousImageId == imageId && previousPacketIndex + 1 == packetIndex) {
-      previousPacketIndex = packetIndex;
-      constructingData.addAll(payload);
-      return;
-    }
-
-    if (previousImageId != imageId && packetIndex == 0) {
-      if (previousImageId != -1) {
-        imageData = Uint8List.fromList(constructingData);
-        print('Image data size = ${imageData.length} bytes');
-        notifyListeners();
-
-        DateTime now = DateTime.now();
-        receivedTimestamps.add(now);
-
-        // 1秒以内のタイムスタンプをカウント
-        receivedTimestamps = receivedTimestamps
-            .where((timestamp) => now.difference(timestamp).inSeconds <= 1)
-            .toList();
-        print(
-            'Images received in the last second: ${receivedTimestamps.length}');
+        // 通知をリッスン
+        characteristic.value.listen((value) {
+          _dataController.add(value);
+          print('Received data: $value');
+        });
+      } else {
+        print("Characteristic does not support notify.");
       }
-      previousImageId = imageId;
-      previousPacketIndex = packetIndex;
-      constructingData = List.from(payload);
-      return;
-    }
-
-    print('Packet loss detected. Discarding image.');
-    previousImageId = -1;
-    previousPacketIndex = -1;
-    constructingData = [];
-  }
-
-  void disconnect() {
-    if (_connectedDevice != null) {
-      _connectedDevice!.disconnect();
-      _connectedDevice = null;
-      isConnected = false;
-      notifyListeners();
+    } catch (e) {
+      print('Error setting notification on ${characteristic.uuid}: $e');
     }
   }
 
   void _disconnectDevice() {
     if (_connectedDevice != null) {
-      disconnect();
+      _connectedDevice!.disconnect();
+      _connectedDevice = null;
+      _txCharacteristic = null;
+      _isConnected = false;
+      notifyListeners();
     }
+  }
+
+  void disconnect() {
+    _disconnectDevice();
   }
 
   void _retryScan() {
@@ -233,7 +220,7 @@ class BLEManager with ChangeNotifier {
 
     print('Retrying scan in 5 seconds...');
     _scanRetryTimer = Timer(const Duration(seconds: 5), () {
-      if (!isConnected) {
+      if (!_isConnected) {
         connectToDevice();
       }
     });
@@ -244,5 +231,11 @@ class BLEManager with ChangeNotifier {
       _scanRetryTimer!.cancel();
       _scanRetryTimer = null;
     }
+  }
+
+  @override
+  void dispose() {
+    _dataController.close();
+    super.dispose();
   }
 }
