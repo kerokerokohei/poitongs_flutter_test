@@ -1,10 +1,25 @@
 // src/main.dart
 import 'package:flutter/material.dart';
-import 'ble_manager.dart';
-import 'dart:typed_data';
+import 'package:provider/provider.dart';
+import 'ble_connection_manager.dart';
+import 'image_manager.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider<BLEConnectionManager>(
+          create: (_) => BLEConnectionManager(),
+        ),
+        ChangeNotifierProxyProvider<BLEConnectionManager, ImageManager>(
+          create: (_) => ImageManager(Stream.empty()),
+          update: (_, bleManager, imageManager) =>
+              imageManager!..updateStream(bleManager.dataStream),
+        ),
+      ],
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -19,40 +34,18 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class HomePage extends StatefulWidget {
+class HomePage extends StatelessWidget {
   const HomePage({Key? key}) : super(key: key);
 
   @override
-  _HomePageState createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  final BLEManager bleManager = BLEManager();
-
-  @override
-  void initState() {
-    super.initState();
-    bleManager.addListener(_updateUI);
-    bleManager.connectToDevice();
-  }
-
-  @override
-  void dispose() {
-    bleManager.removeListener(_updateUI);
-    bleManager.disconnect();
-    super.dispose();
-  }
-
-  void _updateUI() {
-    setState(() {});
-  }
-
-  @override
   Widget build(BuildContext context) {
+    final bleManager = Provider.of<BLEConnectionManager>(context);
+    final imageManager = Provider.of<ImageManager>(context);
+
     Image? imageWidget;
-    if (bleManager.imageData.isNotEmpty) {
+    if (imageManager.imageData.isNotEmpty) {
       imageWidget = Image.memory(
-        bleManager.imageData,
+        imageManager.imageData,
         gaplessPlayback: true,
         fit: BoxFit.contain,
       );
