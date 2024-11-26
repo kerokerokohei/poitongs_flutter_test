@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:convert';
 
 class BLEConnectionManager with ChangeNotifier {
   BluetoothDevice? _connectedDevice;
@@ -19,11 +21,28 @@ class BLEConnectionManager with ChangeNotifier {
       Guid('6E400002-B5A3-F393-E0A9-E50E24DCCA9E'); // RXキャラクタリスティックUUID
 
   // ターゲットMACアドレス
-  final String targetMACAddress = '3A:32:37:3A:65:32';
+  final String targetMACAddress = '48:27:E2:E7:65:71';
 
   // 受信データ用のStreamController
   final StreamController<List<int>> _dataController =
       StreamController.broadcast();
+
+  Future<void> requestPermissions() async {
+    // Bluetooth スキャンと接続に必要なパーミッション
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.bluetooth,
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+
+    if (statuses[Permission.bluetoothScan]!.isDenied ||
+        statuses[Permission.bluetoothConnect]!.isDenied ||
+        statuses[Permission.location]!.isDenied) {
+      // パーミッションが拒否された場合の処理
+      // 例: ユーザーに再度パーミッションを要求するダイアログを表示
+    }
+  }
 
   Stream<List<int>> get dataStream => _dataController.stream;
 
@@ -31,16 +50,19 @@ class BLEConnectionManager with ChangeNotifier {
   Timer? _scanRetryTimer;
 
   BLEConnectionManager() {
-    FlutterBluePlus.adapterState.listen((state) {
-      if (state == BluetoothAdapterState.off) {
-        _isConnected = false;
-        notifyListeners();
-        print('Bluetooth is not powered on.');
-        _disconnectDevice();
-      } else if (state == BluetoothAdapterState.on) {
-        print("Bluetooth powered on. Starting scan...");
-        connectToDevice();
-      }
+    // パーミッションのリクエスト
+    requestPermissions().then((_) {
+      FlutterBluePlus.adapterState.listen((state) {
+        if (state == BluetoothAdapterState.off) {
+          _isConnected = false;
+          notifyListeners();
+          print('Bluetooth is powered off.');
+          _disconnectDevice();
+        } else if (state == BluetoothAdapterState.on) {
+          print("Bluetooth is powered on. Starting scan...");
+          connectToDevice();
+        }
+      });
     });
   }
 
@@ -78,13 +100,14 @@ class BLEConnectionManager with ChangeNotifier {
             final manufacturerData =
                 advertisementData.manufacturerData.values.first;
             if (manufacturerData.length >= 6) {
-              final macBytes = manufacturerData.sublist(0, 6);
-              final macAddress = _bytesToMacAddress(macBytes);
+              final macBytes = manufacturerData.sublist(0, 17);
+              final macaddress_utf8 = utf8.decode(macBytes);
 
               print(
-                  'Extracted MAC Address from Manufacturer Data: $macAddress');
+                  'Extracted MAC Address from Manufacturer Data: ${macaddress_utf8}');
 
-              if (macAddress == targetMACAddress.toUpperCase()) {
+              if (macaddress_utf8.toUpperCase() ==
+                  targetMACAddress.toUpperCase()) {
                 print("Target iOS device found");
                 FlutterBluePlus.stopScan();
                 _connectToDevice(device);
@@ -92,7 +115,7 @@ class BLEConnectionManager with ChangeNotifier {
                 break;
               } else {
                 print(
-                    'Extracted MAC Address does not match target: $macAddress');
+                    'Extracted MAC Address does not match target: $macaddress_utf8');
               }
             } else {
               print(
@@ -101,16 +124,11 @@ class BLEConnectionManager with ChangeNotifier {
           } else {
             print('No Manufacturer Data found in advertisement.');
           }
+        } else {
+          print('Unknown platform');
         }
       }
     });
-  }
-
-  String _bytesToMacAddress(List<int> bytes) {
-    return bytes
-        .map((b) => b.toRadixString(16).padLeft(2, '0'))
-        .join(':')
-        .toUpperCase();
   }
 
   Future<void> _connectToDevice(BluetoothDevice device) async {
@@ -180,14 +198,6 @@ class BLEConnectionManager with ChangeNotifier {
       // プロパティの確認と通知設定
       if (!characteristic.properties.notify) {
         await characteristic.setNotifyValue(true);
-        print("Notification set on ${characteristic.uuid}");
-
-        // キャラクタリスティックのプロパティを再確認
-        print("=== After Setting Notification ===");
-        print("Properties: ${characteristic.properties}");
-        print("isNotifying: ${characteristic.isNotifying}");
-        print("===============================");
-
         // 通知をリッスン
         characteristic.value.listen((value) {
           _dataController.add(value);
