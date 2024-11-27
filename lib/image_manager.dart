@@ -10,19 +10,23 @@ class ImageManager with ChangeNotifier {
 
   Uint8List _imageData = Uint8List(0);
   Uint8List get imageData => _imageData;
+  final _imageDataController = StreamController<Uint8List>.broadcast();
+  Stream<Uint8List> get imageDataStream => _imageDataController.stream;
 
   List<DateTime> _receivedTimestamps = [];
 
   StreamSubscription<List<int>>? _subscription;
+  Stream<List<int>> _dataStream;
 
-  ImageManager(Stream<List<int>> dataStream) {
-    _subscription = dataStream.listen(_onDataReceived);
+  ImageManager(this._dataStream) {
+    _subscription = _dataStream.listen(_onDataReceived);
   }
 
   // ストリームの更新（BLEConnectionManagerの接続が変更された場合に呼び出す）
   void updateStream(Stream<List<int>> newStream) {
     _subscription?.cancel();
-    _subscription = newStream.listen(_onDataReceived);
+    _dataStream = newStream;
+    _subscription = _dataStream.listen(_onDataReceived);
   }
 
   void _onDataReceived(List<int> data) {
@@ -43,7 +47,7 @@ class ImageManager with ChangeNotifier {
       if (_previousImageId != -1) {
         _imageData = Uint8List.fromList(_constructingData);
         print('Image data size = ${_imageData.length} bytes');
-        notifyListeners();
+        _imageDataController.add(imageData);
 
         DateTime now = DateTime.now();
         _receivedTimestamps.add(now);
@@ -65,9 +69,13 @@ class ImageManager with ChangeNotifier {
     _constructingData = [];
   }
 
+  String _currentLabel = 'none';
+  String get currentLabel => _currentLabel;
+
   void clearImageData() {
     _imageData = Uint8List(0);
-    notifyListeners();
+    _currentLabel = 'none';
+    _imageDataController.close();
   }
 
   @override
