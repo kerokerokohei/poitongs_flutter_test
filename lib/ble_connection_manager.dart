@@ -197,6 +197,7 @@ class BLEConnectionManager with ChangeNotifier {
     try {
       // プロパティの確認と通知設定
       if (!characteristic.properties.notify) {
+        // 条件を修正
         await characteristic.setNotifyValue(true);
         // 通知をリッスン
         characteristic.value.listen((value) {
@@ -211,11 +212,26 @@ class BLEConnectionManager with ChangeNotifier {
     }
   }
 
-  void _disconnectDevice() {
+  void _disconnectDevice() async {
+    if (_txCharacteristic != null) {
+      try {
+        await _txCharacteristic!.setNotifyValue(false);
+        print('Notifications disabled for TX characteristic.');
+      } catch (e) {
+        print('Error disabling notifications: $e');
+      }
+    }
+
     if (_connectedDevice != null) {
-      _connectedDevice!.disconnect();
+      try {
+        await _connectedDevice!.disconnect();
+        print('Disconnected from device.');
+      } catch (e) {
+        print('Error disconnecting device: $e');
+      }
       _connectedDevice = null;
       _txCharacteristic = null;
+      _rxCharacteristic = null;
       _isConnected = false;
       notifyListeners();
     }
@@ -246,6 +262,7 @@ class BLEConnectionManager with ChangeNotifier {
   @override
   void dispose() {
     _dataController.close();
+    _disconnectDevice(); // 切断処理を追加
     super.dispose();
   }
 }
