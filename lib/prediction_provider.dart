@@ -8,7 +8,12 @@ import 'predict.dart';
 // BLEConnectionManagerプロバイダー
 final bleConnectionManagerProvider =
     ChangeNotifierProvider<BLEConnectionManager>((ref) {
-  return BLEConnectionManager();
+  final manager = BLEConnectionManager();
+  ref.onDispose(() {
+    // アプリ終了時やプロバイダが破棄される際に切断処理を行う
+    manager.disconnect();
+  });
+  return manager;
 });
 
 // ImageManagerプロバイダー
@@ -17,8 +22,8 @@ final imageManagerProvider = Provider<ImageManager>((ref) {
 
   final imageManager = ImageManager(bleManager.dataStream);
 
-  // アプリ終了時にリソースを解放
   ref.onDispose(() {
+    // ImageManagerのクリーンアップ
     imageManager.dispose();
   });
 
@@ -26,12 +31,12 @@ final imageManagerProvider = Provider<ImageManager>((ref) {
 });
 
 // Predictプロバイダー
-final predictProvider = Provider<Predict>((ref) {
+final predictProvider = Provider.autoDispose<Predict>((ref) {
   return Predict();
 });
 
 // 画像データのストリームプロバイダー
-final imageStreamProvider = StreamProvider<Uint8List>((ref) {
+final imageStreamProvider = StreamProvider.autoDispose<Uint8List>((ref) {
   final imageManager = ref.watch(imageManagerProvider);
   return imageManager.imageDataStream;
 });
